@@ -1,0 +1,419 @@
+---
+title: "Spec-Driven Development"
+description: "Build a feature live with an AI. Watch four security bugs appear. Watch them disappear once we close the gaps first."
+type: slides
+date: 2026-05-07
+tags: [sdd, ai, engineering, best-practices]
+---
+
+<Slide layout="cover">
+
+# Spec-Driven Development
+
+Build it live. Bugs first. Principles last.
+
+</Slide>
+
+---
+
+## The Brief
+
+It's 4:47 PM on a Friday. PM pings you in Slack:
+
+```text
+"we need POST /auth/forgot-password by EOD.
+ just the basic flow — email, link, done."
+```
+
+You have an hour. You open Cursor. You reach for the AI.
+
+This deck is what happens next — twice. Once the way most of us actually do it.
+Then once with a spec.
+
+---
+
+## Attempt 1 — The Prompt
+
+You type the obvious thing.
+
+```text
+"add a forgot-password endpoint that emails the user a reset link"
+```
+
+13 words. Ship it.
+
+---
+
+## Attempt 1 — The AI's Output
+
+Looks completely reasonable. Compiles. The happy path works.
+
+```ts
+async function forgotPassword(req, res) {
+  const { email } = req.body
+  const user = await db.users.findByEmail(email)
+  if (!user) return res.status(404).json({ error: "User not found" })
+
+  const token = crypto.randomUUID()
+  await db.tokens.create({ userId: user.id, token })
+  await sendEmail(user.email, `Reset link: /reset?token=${token}`)
+
+  return res.json({ ok: true })
+}
+```
+
+We're going to audit this line by line. Bring a security person.
+
+---
+
+## Bug #1 — Account Enumeration
+
+Look at the two response branches.
+
+```ts
+if (!user) return res.status(404).json({ error: "User not found" })  // ← unknown email
+return res.json({ ok: true })                                        // ← known email
+```
+
+The endpoint just told an attacker which emails belong to real customers.
+Loop it over a leaked email list — you have a customer roster.
+
+That's **CWE-203**. The AI didn't know your security policy, so it picked one.
+
+---
+
+## Bug #2 — No Rate Limit
+
+The endpoint will happily accept ten thousand requests per second.
+
+```text
+$ for email in $(cat customer-list.txt); do
+>   curl -X POST /auth/forgot-password -d "{\"email\":\"$email\"}"
+> done
+```
+
+Two consequences, both bad:
+
+```text
+1.  Mailbomb     —  every customer gets a reset email they didn't ask for.
+2.  SMTP exhaustion  —  your real password resets stop working when the
+                        provider throttles you.
+```
+
+The AI didn't know your throttle policy. So there isn't one.
+
+---
+
+## Bug #3 — Token Never Expires
+
+```ts
+await db.tokens.create({ userId: user.id, token })
+```
+
+No `expiresAt`. No `usedAt`. The reset link works forever.
+
+```text
+- A token leaked in a screenshot 18 months ago still resets the password today.
+- A token used on Tuesday can be re-used on Wednesday by anyone who has it.
+```
+
+Token TTL is a one-line decision. The AI made it. The decision is "infinity."
+
+---
+
+## Bug #4 — No Audit Trail
+
+After every reset request you have no answer to:
+
+```text
+Who triggered it?            (userId)
+From what IP?                (req.ip)
+At what time?                (timestamp)
+Did the user complete it?    (resetCompletedAt)
+```
+
+Six months from now, security comes asking. You have nothing. Not because logging
+is hard — because nobody told the AI to log.
+
+---
+
+## The Pattern
+
+Four bugs. One root cause.
+
+```text
+Bug                       Gap the AI guessed at
+─────────────────────     ─────────────────────────────────────────
+Account enumeration       "what should I respond when user is missing?"
+No rate limit             "how often can this endpoint be called?"
+Token never expires       "how long is the token valid for?"
+No audit trail            "what should I record about this action?"
+```
+
+The AI didn't make mistakes. It made **decisions you didn't make first**.
+
+Every undefined behaviour is a future bug — picked from training data,
+not from your domain.
+
+---
+
+## The Pivot
+
+Same model. Same prompt-length budget. Same Friday afternoon.
+
+What if we spent 90 seconds writing the gaps down before the AI fills them in?
+
+```text
+Step 1   List every gap.
+Step 2   Close each one with a decision.
+Step 3   Hand the decisions to the agent. Not a description — the decisions.
+```
+
+Three steps. Same feature. Watch the bug count change.
+
+---
+
+## Step 1 — Clarify
+
+The gaps don't announce themselves. You hunt them. Every question goes in the
+left column. Every answer goes in the right.
+
+```text
+Gap                                  Decision
+───────────────────────────────────  ──────────────────────────────────────
+Response when user not found?        Same shape as success — never leak
+Rate limit per IP?                   5 / hour
+Rate limit per email?                3 / hour
+Token TTL?                           15 minutes
+Token reusable?                      No — single-use, set usedAt on first use
+Token storage?                       Hashed, never plaintext
+Audit trail?                         Always log: userId?, ip, requestedAt
+HTTP status on success?              202 Accepted
+HTTP status on unknown email?        202 Accepted (identical)
+```
+
+Nine gaps. Nine decisions. **Zero** of these decisions are in the AI's head.
+
+---
+
+## Step 2 — Spec
+
+Translate the table into a file the agent can read.
+
+```yaml
+# specs/forgot-password.yaml
+endpoint: POST /auth/forgot-password
+version: "1.0"
+owner: auth-team
+
+inputs:
+  - name: email   type: Email   required: true
+
+invariants:
+  - response is identical for known and unknown emails    # no enumeration
+  - max 5 requests / hour / IP                            # rate limit (IP)
+  - max 3 requests / hour / email                         # rate limit (email)
+  - token TTL <= 15 minutes
+  - token is single-use (usedAt set on first use)
+  - token stored as SHA-256 hash, never plaintext
+
+outputs:
+  status: 202 Accepted
+  body:   { ok: true }    # always — even when email is unknown
+
+side_effects:
+  - email sent IF user exists
+  - audit log entry: { userId?, ip, requestedAt }
+
+errors:
+  - none surfaced to the client (always 202)
+```
+
+Each line is one closed gap. The spec **is** the clarify table, machine-readable.
+
+---
+
+## Step 3 — Tests From the Spec
+
+One test per closed gap. Written first. All red.
+
+```ts
+// tests/forgot-password.test.ts — every test names a spec line
+
+it("returns identical 202 body for known and unknown emails", ...)
+it("rate-limits at 5 requests / hour / IP", ...)
+it("rate-limits at 3 requests / hour / email", ...)
+it("rejects tokens older than 15 minutes", ...)
+it("rejects already-used tokens", ...)
+it("stores token as SHA-256 hash, not plaintext", ...)
+it("writes audit log entry on every request, including unknown emails", ...)
+```
+
+If a test is hard to write, a gap is still open. Go back to the spec.
+
+---
+
+## Step 4 — Implement Against the Spec
+
+Hand the agent the spec, not a description.
+
+```text
+"Implement POST /auth/forgot-password.
+ Spec:  specs/forgot-password.yaml
+ Tests: tests/forgot-password.test.ts — all must pass.
+ Do not invent behaviour beyond the spec."
+```
+
+```ts
+async function forgotPassword(req, res) {
+  const email = await EmailSchema.parseAsync(req.body.email)
+
+  await rateLimitByIp(req.ip, { max: 5, window: "1h" })            // ← invariant
+  await rateLimitByEmail(email,  { max: 3, window: "1h" })         // ← invariant
+
+  const user = await db.users.findByEmail(email)
+  if (user) {
+    const token = crypto.randomBytes(32).toString("hex")
+    await db.tokens.create({
+      userId:    user.id,
+      tokenHash: sha256(token),                                    // ← invariant
+      expiresAt: addMinutes(new Date(), 15),                       // ← invariant
+      usedAt:    null,                                             // ← invariant
+    })
+    await sendEmail(user.email, `Reset: /reset?token=${token}`)    // ← side_effect
+  }
+
+  await audit.log({ userId: user?.id, ip: req.ip, action: "forgot-password" })
+  return res.status(202).json({ ok: true })                        // ← invariant
+}
+```
+
+Every line traces to a spec statement. Nothing is invented.
+
+---
+
+## Step 5 — Verify
+
+```text
+✓  returns identical 202 body for known and unknown emails
+✓  rate-limits at 5 requests / hour / IP
+✓  rate-limits at 3 requests / hour / email
+✓  rejects tokens older than 15 minutes
+✓  rejects already-used tokens
+✓  stores token as SHA-256 hash, not plaintext
+✓  writes audit log entry on every request, including unknown emails
+```
+
+CWE-203 — closed. Mailbomb — closed. Token replay — closed. Audit gap — closed.
+
+If a test failed, the failure would name the broken invariant — not "it's broken,"
+but `forgot-password.yaml:11` is violated.
+
+---
+
+## Two Months Later — Requirements Change
+
+Security: "passwords reset via this flow must be at least 12 characters."
+
+```text
+Old way:    Tell the agent the new rule. Hope it touches every place.
+            Hope your test suite happens to cover it. (It doesn't.)
+
+SDD way:    Edit one line of the spec. Test fails. Agent fixes. CI green.
+```
+
+```yaml
+# specs/forgot-password.yaml — one new invariant
+invariants:
+  - new password length >= 12 chars      # ← added
+```
+
+```diff
+  // src/auth/reset.ts
++ if (newPassword.length < 12) throw new PasswordTooShort()
+  await db.users.update({ id: user.id, password: hash(newPassword) })
+```
+
+The spec diff is the changelog. There is no other source of truth.
+
+---
+
+## What You Just Watched
+
+```text
+1   13 words to the AI produced 4 production-grade security bugs.
+2   We named the gaps before the AI got to fill them.
+3   We closed each gap in one file — the spec.
+4   We turned each closed gap into a failing test.
+5   We let the agent implement against the spec. No description, no guessing.
+6   When requirements changed, we changed the spec first. Code followed.
+```
+
+That is Spec-Driven Development. End of theory.
+
+---
+
+## The Four Principles
+
+Extracted from what you watched. Not invented in advance.
+
+```text
+01   Gaps before code
+     Surface every ambiguity before the agent generates anything.
+     If a question can't be answered, the spec isn't done.
+
+02   Spec is the contract
+     The agent reads the spec, not your memory or your Slack thread.
+     If the agent and the spec disagree, the spec wins.
+
+03   Tests trace to spec lines
+     Every test names the invariant it protects.
+     A failing test names a spec line — not a code line.
+
+04   Spec is the changelog
+     When requirements change, the spec changes first.
+     Code, tests, and prompts follow downstream. Always in that order.
+```
+
+Four lines. That is the discipline.
+
+---
+
+## Tools Mechanise This
+
+What we just did by hand, five tools automate. Same discipline, different
+ergonomics. Pick the one that fits your team.
+
+```text
+Tool                  Who writes the spec       Best for
+──────────────────    ───────────────────────   ─────────────────────────────
+Spec Kit              You — slash commands      Solo / max control
+BMAD                  AI agents, you approve    Teams with review gates
+Matt Pocock Skills    You + AI guidance         Lightweight Claude Code flow
+Superpowers           You + forced gates        Reviewer-first culture
+OpenSpec              You — but as deltas       Brownfield / legacy code
+```
+
+All five enforce: gaps before code · spec is the contract · tests trace to spec · spec is the changelog.
+
+---
+
+<Slide layout="cover">
+
+## Pick a Tool
+
+The discipline is the same. The pen changes hands.
+
+[Spec Kit →](https://github.com/github/spec-kit) `specify init .`
+
+[BMAD →](https://github.com/bmad-code-org/BMAD-METHOD) `npx bmad-method install`
+
+[Matt Pocock Skills →](https://github.com/mattpocock/skills) Claude Code slash commands
+
+[Superpowers →](https://github.com/superpowers-ai/superpowers) brainstorm → plan → execute gates
+
+[OpenSpec →](https://github.com/openspec/openspec) delta-spec for brownfield
+
+**Go deeper:** [Five Tools, One Feature →](/sdd/spec-driven-development-deep-dive)
+
+</Slide>

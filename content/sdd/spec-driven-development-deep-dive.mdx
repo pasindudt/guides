@@ -1,0 +1,626 @@
+---
+title: "Five Tools, One Feature"
+description: "The same forgot-password feature from the main deck — built five times, with Spec Kit, BMAD, Matt Pocock's Skills, Superpowers, and OpenSpec."
+type: slides
+date: 2026-05-07
+tags: [sdd, ai, engineering, spec-kit, bmad, superpowers, openspec, matt-pocock, tools]
+---
+
+<Slide layout="cover">
+
+# Five Tools, One Feature
+
+The same `forgot-password` spec — built five different ways.
+
+Same discipline. Different hands on the pen.
+
+</Slide>
+
+---
+
+## Recap — What We're Building
+
+The feature you watched in the main deck. The spec is already written.
+
+```yaml
+# specs/forgot-password.yaml
+endpoint: POST /auth/forgot-password
+version:  "1.0"
+
+inputs:
+  - name: email   type: Email   required: true
+
+invariants:
+  - response is identical for known and unknown emails    # no enumeration
+  - max 5 requests / hour / IP
+  - max 3 requests / hour / email
+  - token TTL <= 15 minutes
+  - token is single-use
+  - token stored as SHA-256 hash, never plaintext
+
+outputs:
+  status: 202 Accepted
+  body:   { ok: true }
+
+side_effects:
+  - email sent IF user exists
+  - audit log: { userId?, ip, requestedAt }
+```
+
+Five tools. Five paths to this same spec — and to working code that satisfies it.
+
+---
+
+<Slide layout="cover">
+
+## Tool 1
+
+# Spec Kit
+
+You write the spec. Five slash commands gate every phase.
+
+`github/spec-kit` — 93k stars
+
+</Slide>
+
+---
+
+## Spec Kit — Install & Constitution
+
+```text
+uv tool install specify-cli \
+  --from git+https://github.com/github/spec-kit.git@v0.8.6
+
+specify init . --integration copilot
+```
+
+Set the project-wide rules once. They prepend to every subsequent agent prompt.
+
+```text
+/speckit.constitution
+  Governing principles for an auth service:
+   - Never leak account existence in any endpoint
+   - All security-sensitive endpoints rate-limited at multiple keys
+   - Tokens MUST be single-use, hashed, time-bounded
+   - All auth events MUST be audit-logged
+```
+
+Generated `.specify/constitution.md` is now the contract that governs every
+feature spec — including this one.
+
+---
+
+## Spec Kit — Specify & Plan
+
+Describe **intent**, not stack.
+
+```text
+/speckit.specify
+  POST /auth/forgot-password — user requests a reset email.
+  Same response for known and unknown emails (never leak existence).
+  Rate limit: 5/hour/IP, 3/hour/email.
+  Token: 15-minute TTL, single-use, SHA-256 hashed at rest.
+  Audit log every request.
+```
+
+Generated `.specify/features/forgot-password/spec.md` looks just like the YAML
+spec from the main deck — acceptance criteria one per line.
+
+Then describe **stack**, not behaviour.
+
+```text
+/speckit.plan
+  TypeScript + Express. Prisma + PostgreSQL. Redis for rate limit counters.
+  Use express-rate-limit middleware. Use crypto.randomBytes for tokens.
+  Use existing audit-log table. Use existing nodemailer SMTP wrapper.
+```
+
+`spec.md` is locked. `plan.md` maps it to your stack.
+
+---
+
+## Spec Kit — Tasks & Implement
+
+```text
+/speckit.tasks
+```
+
+Generated `.specify/features/forgot-password/tasks.md`:
+
+```text
+[ ] 1. Add Zod EmailSchema  — Ref: spec.md acceptance line 1
+[ ] 2. Add rate-limit middleware (5/h/IP)  — Ref: spec.md line 2
+[ ] 3. Add per-email rate limiter (3/h/email)  — Ref: spec.md line 3
+[ ] 4. Migration: tokens table (tokenHash, expiresAt, usedAt)  — Ref: lines 4-6
+[ ] 5. Implement forgotPassword handler  — Ref: spec.md (all)
+[ ] 6. Wire audit.log in success and miss paths  — Ref: spec.md line 7
+[ ] 7. Tests — one per acceptance line
+```
+
+```text
+/speckit.implement
+```
+
+Agent reads `spec.md`, `plan.md`, `tasks.md` before a single line. The five
+slash commands are gates: `/speckit.implement` refuses to run with gaps open.
+
+Output: code where every line traces to `spec.md`. Tests green. Done.
+
+---
+
+<Slide layout="cover">
+
+## Tool 2
+
+# BMAD Method
+
+AI agents draft each artifact. You review and approve between phases.
+
+`bmad-code-org/BMAD-METHOD` — 46k stars
+
+</Slide>
+
+---
+
+## BMAD — Install & Meet the Agents
+
+```text
+npx bmad-method install
+# Select your AI IDE — Claude Code, Cursor, Copilot, etc.
+```
+
+```text
+Agent       Role                          Produces
+──────────  ────────────────────────────  ──────────────────────────
+@pm         Product Manager               docs/prd.md
+@architect  Software Architect            docs/architecture.md
+@developer  Senior Developer              src/ — implementation
+@qa         QA Engineer                   tests/ + review report
+@bmad-help  Navigator — what's next?      guidance only
+```
+
+Each agent reads only what the previous agent produced. You review every
+artifact before the next agent runs. The chain is the spec.
+
+---
+
+## BMAD — PM & Architect
+
+```text
+@pm
+Create a PRD for POST /auth/forgot-password.
+Auth service. Must not leak account existence. Rate limit per IP and per email.
+Tokens short-lived, single-use, hashed. Audit every request.
+```
+
+PM produces `docs/prd.md`:
+
+```text
+# PRD — Forgot Password
+
+User Stories
+  - As a user, I can request a password reset email
+  - The system never reveals whether my email is registered
+
+Acceptance Criteria
+  [ ] Identical 202 response for known and unknown emails
+  [ ] 5/hour/IP and 3/hour/email rate limits
+  [ ] Token TTL <= 15 minutes, single-use
+  [ ] Token stored as hash, not plaintext
+  [ ] Audit log on every request
+
+NFRs
+  - p99 < 200ms
+  - Zero tolerance for token replay
+```
+
+```text
+@architect
+Review docs/prd.md. Architecture for forgot-password.
+Stack: Express + Prisma + PostgreSQL + Redis.
+```
+
+Architect produces `docs/architecture.md` — concurrency strategy, error
+classes, data model. You review. Approve. Move on.
+
+---
+
+## BMAD — Developer & QA
+
+```text
+@developer
+Implement POST /auth/forgot-password.
+Read docs/prd.md and docs/architecture.md before any code.
+Every AC must be satisfied. Every architecture decision must be respected.
+```
+
+The developer agent is constrained by two pre-approved documents. No
+free-floating assumptions.
+
+```text
+@qa
+Review the implementation against docs/prd.md.
+Write one test per acceptance criterion. Flag any AC not covered.
+```
+
+QA produces `tests/forgot-password.test.ts` and a review report:
+
+```text
+✓  AC1  identical 202 for known and unknown — passes
+✓  AC2  5/hour/IP — passes
+✓  AC3  3/hour/email — passes
+✓  AC4  token TTL — passes
+✓  AC5  token hash storage — passes
+✓  AC6  audit log on every request — passes
+
+NFR p99 < 200ms — no load test present. Recommend k6 smoke before deploy.
+```
+
+Failures name the PRD line — not just "broken." NFR gaps surface as
+recommendations, not silent misses.
+
+---
+
+<Slide layout="cover">
+
+## Tool 3
+
+# Matt Pocock's Skills
+
+Lightweight Claude Code slash commands. Each enforces one piece of the
+discipline. You compose them.
+
+</Slide>
+
+---
+
+## Matt Pocock Skills — Install & Catalogue
+
+```text
+# Skills live in .agents/skills/ in your repo.
+# Each skill is a SKILL.md describing a Claude Code slash command.
+```
+
+The SDD-relevant ones:
+
+```text
+/grill-with-docs    Interrogates you about a feature until every gap is named.
+                    Output: a hardened brief with no open questions.
+
+/to-prd             Turns the brief into a PRD with acceptance criteria.
+
+/to-issues          Breaks the PRD into one-issue-per-criterion tasks.
+
+/tdd                Drives test-first implementation against the PRD.
+                    Refuses to write code before a failing test exists.
+
+/diagnose           When a test fails, names the PRD criterion that broke
+                    — not just the line of code.
+```
+
+Composable, not prescriptive. You pick the rungs you need.
+
+---
+
+## Matt Pocock Skills — Grill the Spec
+
+The clarify phase as a slash command.
+
+```text
+/grill-with-docs
+  Build POST /auth/forgot-password — email, link, done.
+```
+
+Claude responds with a stream of pointed questions:
+
+```text
+1.  What response for unknown emails? (any inconsistency leaks existence)
+2.  Per-IP rate limit, or per-email, or both?
+3.  Token TTL? Single-use, or re-usable until expiry?
+4.  Plaintext or hashed at rest?
+5.  Audit log scope — only user-found, or every request?
+6.  HTTP status — 200, 202, 204?
+7.  What does the email body say if user doesn't exist? (it shouldn't be sent)
+```
+
+You answer. Each answer hardens the brief. When the questions stop, every gap
+is closed — and the spec is the transcript of the conversation.
+
+---
+
+## Matt Pocock Skills — TDD the Implementation
+
+Spec hardened. Now drive the build.
+
+```text
+/tdd
+  Implement POST /auth/forgot-password against the brief above.
+  Test first. Smallest possible step.
+```
+
+The skill enforces the loop:
+
+```text
+red    →  write a failing test for one acceptance line
+green  →  implement the minimum to pass it
+refactor → only after green, never before
+```
+
+If a test fails mid-build:
+
+```text
+/diagnose
+```
+
+Names the AC that broke and the line of the spec it traces to. The skills
+are small. Their composition is the discipline.
+
+---
+
+<Slide layout="cover">
+
+## Tool 4
+
+# Superpowers
+
+Hard gates between brainstorm, plan, and execute. The AI cannot skip ahead.
+
+</Slide>
+
+---
+
+## Superpowers — Install & The Three Phases
+
+```text
+npx superpowers init
+```
+
+Superpowers installs three phases as Claude Code modes. Each is a gate.
+
+```text
+Phase           What happens                       Gate before next phase
+──────────────  ─────────────────────────────────  ───────────────────────
+brainstorm      Surface options, risks, gaps       You sign off
+plan            Turn the brainstorm into a spec    You sign off
+execute         Implement against the plan         Tests + review pass
+```
+
+The agent literally cannot enter `execute` without an approved `plan`.
+The agent cannot enter `plan` without an approved `brainstorm`.
+
+The discipline is enforced by mode, not memory.
+
+---
+
+## Superpowers — Brainstorm & Plan
+
+```text
+/brainstorm
+  Need a forgot-password endpoint. Auth service.
+```
+
+The agent doesn't write code. It surfaces tradeoffs:
+
+```text
+Options surfaced:
+  - Response shape: identical (no leak) vs explicit (UX clearer)
+  - Rate limit: IP only / email only / both / sliding window
+  - Token storage: plaintext (fast) vs hashed (safe)
+  - TTL: 5 / 15 / 60 minutes — security vs UX tradeoff
+  - Email content: include username? deeplink? plain link?
+
+Risks flagged:
+  - CWE-203 (account enumeration) if responses differ
+  - SMTP exhaustion if no email-level rate limit
+  - Token replay if no usedAt
+```
+
+You pick. Sign off. Now `/plan` becomes available — and the plan is constrained
+by the brainstorm decisions. No backtracking.
+
+---
+
+## Superpowers — Execute With Forced Review
+
+```text
+/execute
+```
+
+The execute phase is bound by the approved plan. The agent writes code, runs
+tests, and stops at every required review gate:
+
+```text
+[review-gate]  Implementation drafted. Diff:
+                 + src/auth/forgot-password.ts  (47 lines)
+                 + tests/forgot-password.test.ts (61 lines)
+               Approve? (y/n)
+
+[review-gate]  Tests passing. Coverage:
+                 - 7/7 acceptance criteria covered
+                 - 0 NFR load tests
+               Approve? (y/n)
+```
+
+You can't accidentally ship from a half-formed brainstorm. The gates make
+the spec — and the human review of it — non-skippable.
+
+---
+
+<Slide layout="cover">
+
+## Tool 5
+
+# OpenSpec
+
+Delta-spec for brownfield code. You don't spec the whole system —
+you spec what's **changing**.
+
+</Slide>
+
+---
+
+## OpenSpec — Install & The Delta Idea
+
+```text
+npx openspec init
+```
+
+Most SDD assumes greenfield. OpenSpec assumes the opposite.
+
+```text
+Greenfield SDD          OpenSpec
+──────────────────────  ──────────────────────────────────────────
+Spec the whole feature  Spec only what's changing
+                        The change proposal IS the spec
+                        The current code is the baseline
+                        Old changes archived as the changelog
+```
+
+For an existing `forgot-password` endpoint that has none of our invariants,
+you don't write `forgot-password.yaml` from scratch. You write a delta.
+
+---
+
+## OpenSpec — Propose a Delta
+
+Existing code: a basic forgot-password with no rate limit, no TTL, no audit.
+
+```text
+openspec propose add-forgot-password-hardening
+```
+
+Generates `.openspec/changes/2026-05-07-forgot-password-hardening.md`:
+
+```text
+# Change: Harden POST /auth/forgot-password
+
+## Why
+Current implementation has no rate limit, leaks account existence, and stores
+plaintext tokens. Security review flagged all three.
+
+## What's changing
++ identical 202 response for known and unknown emails
++ 5/hour/IP and 3/hour/email rate limits
++ token TTL = 15 minutes
++ token single-use (usedAt set on first use)
++ token stored as SHA-256 hash
++ audit log on every request
+
+## What's NOT changing
+- email template, SMTP wrapper, route name, request shape
+
+## Acceptance
+- existing tests still pass
+- 7 new tests for the new invariants
+```
+
+The delta is the spec. The current code is the baseline. The diff is the work.
+
+---
+
+## OpenSpec — Apply & Archive
+
+```text
+openspec apply 2026-05-07-forgot-password-hardening
+```
+
+The agent reads the delta, the existing code, and produces a focused diff:
+
+```diff
++ import { rateLimitByIp, rateLimitByEmail } from "./rate-limit"
++ import { sha256 } from "./crypto"
+
+  async function forgotPassword(req, res) {
++   await rateLimitByIp(req.ip, { max: 5, window: "1h" })
++   await rateLimitByEmail(email, { max: 3, window: "1h" })
+    ...
+-   await db.tokens.create({ userId: user.id, token })
++   await db.tokens.create({
++     userId:    user.id,
++     tokenHash: sha256(token),
++     expiresAt: addMinutes(new Date(), 15),
++     usedAt:    null,
++   })
++   await audit.log({ userId: user?.id, ip: req.ip, action: "forgot-password" })
+-   if (!user) return res.status(404).json({ error: "User not found" })
++   return res.status(202).json({ ok: true })
+  }
+```
+
+Once green, the delta is archived to `.openspec/archived/`. Your repo's
+SDD history is the sequence of deltas — you never had to spec the whole
+system to start.
+
+---
+
+## Side By Side — Same Feature, Five Paths
+
+```text
+Phase        Spec Kit            BMAD              Matt Pocock         Superpowers           OpenSpec
+───────────  ──────────────────  ────────────────  ──────────────────  ────────────────────  ────────────────────
+Clarify      /speckit.specify    @pm brief         /grill-with-docs    /brainstorm + gate    Existing code +
+                                                                                              "What's changing?"
+Spec         spec.md             prd.md            brief transcript    plan.md (gated)       change-NN.md (delta)
+Plan         /speckit.plan       @architect        (in /tdd prompt)    plan.md               (in delta)
+Tasks        /speckit.tasks      Implied           /to-issues          (in plan)             (in delta)
+Implement    /speckit.implement  @developer        /tdd                /execute              openspec apply
+Verify       Tests from spec     @qa report        /diagnose           Forced review gates   Delta acceptance
+
+Spec author  You                 AI (PM agent)     You + AI grilling   You (post-brainstorm) You (delta only)
+Review       Optional            Required          Optional            Forced (every gate)   On the delta
+Best fit     Solo / control      Teams w/ planning Composable, light   Reviewer-first        Brownfield / legacy
+```
+
+Same discipline ends every column: code traces to a spec, tests trace to spec lines, failures name invariants.
+
+---
+
+## Which One For You
+
+```text
+You want to own every decision yourself
+  → Spec Kit
+
+Your team has dedicated reviewers and you want AI to draft
+  → BMAD
+
+You want to mix and match — some specs by you, some by AI, all light
+  → Matt Pocock's Skills
+
+You want hard gates the AI literally cannot skip
+  → Superpowers
+
+You're working in a legacy codebase with no specs at all
+  → OpenSpec
+```
+
+You can also stack them. Matt Pocock's skills slot inside any of the others.
+OpenSpec deltas can be drafted by BMAD's PM agent. Superpowers' gates can wrap
+Spec Kit's slash commands.
+
+The discipline is the same. The ergonomics are personal.
+
+---
+
+<Slide layout="cover">
+
+## Resources
+
+**Spec Kit** — [github.com/github/spec-kit](https://github.com/github/spec-kit)
+`uv tool install specify-cli --from git+https://github.com/github/spec-kit.git`
+
+**BMAD Method** — [github.com/bmad-code-org/BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD)
+`npx bmad-method install`
+
+**Matt Pocock's Skills** — [github.com/mattpocock/skills](https://github.com/mattpocock/skills)
+Drop into `.agents/skills/` in any Claude Code project.
+
+**Superpowers** — [github.com/superpowers-ai/superpowers](https://github.com/superpowers-ai/superpowers)
+`npx superpowers init`
+
+**OpenSpec** — [github.com/openspec/openspec](https://github.com/openspec/openspec)
+`npx openspec init`
+
+**Back to the live build** — [SDD Overview →](/sdd/spec-driven-development)
+
+</Slide>
