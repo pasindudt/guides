@@ -7,7 +7,7 @@ export default function HomePage() {
   if (categories.length === 0) {
     return (
       <div className="max-w-6xl mx-auto px-4 py-16 text-center">
-        <h1 className="text-3xl font-bold mb-4">Welcome to Presenter</h1>
+        <h1 className="text-3xl font-bold mb-4">Welcome to Guides</h1>
         <p className="text-gray-500 dark:text-gray-400">
           No learning materials yet. Add <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1 rounded">.mdx</code> files
           inside <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1 rounded">content/[category]/</code> to get started.

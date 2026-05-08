@@ -15,6 +15,10 @@ import {
 import { SlideViewer } from '@/components/SlideViewer'
 import { ArticleViewer } from '@/components/ArticleViewer'
 import { Slide } from '@/components/Slide'
+import { Expandable, ExpandableItem } from '@/components/slide-modes/Expandable'
+import { Reveal, RevealItem } from '@/components/slide-modes/Reveal'
+import { Flashcard } from '@/components/slide-modes/Flashcard'
+import { Tabs, Tab } from '@/components/slide-modes/Tabs'
 
 type Params = Promise<{ category: string; slug: string }>
 
@@ -27,13 +31,20 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   const material = getMaterial(category, slug)
   if (!material) return {}
   return {
-    title: `${material.frontmatter.title} | Presenter`,
+    title: `${material.frontmatter.title} | Guides`,
     description: material.frontmatter.description,
   }
 }
 
 const mdxComponents = {
   Slide,
+  Expandable,
+  ExpandableItem,
+  Reveal,
+  RevealItem,
+  Flashcard,
+  Tabs,
+  Tab,
 }
 
 const mdxOptions: Record<string, unknown> = {

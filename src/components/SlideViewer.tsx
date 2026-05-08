@@ -1,6 +1,7 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { SlideContext, type RevealHandle } from './slide-modes/SlideContext'
 
 interface SlideViewerProps {
   children: React.ReactNode
@@ -11,6 +12,16 @@ interface SlideViewerProps {
 export function SlideViewer({ children, totalSlides, title }: SlideViewerProps) {
   const [current, setCurrent] = useState(0)
   const [isFullscreen, setIsFullscreen] = useState(false)
+
+  // Per-slide registry of Reveal handles: slideIndex -> Map<id, RevealHandle>.
+  const revealsRef = useRef<Map<number, Map<string, RevealHandle>>>(new Map())
+  const currentRef = useRef(current)
+  useEffect(() => {
+    currentRef.current = current
+  }, [current])
+
+  // Refs to each slide's scroll container (for scroll-to-top on slide change).
+  const scrollRefs = useRef<Array<HTMLDivElement | null>>([])
 
   // Restore slide from URL hash on mount
   useEffect(() => {
@@ -32,6 +43,51 @@ export function SlideViewer({ children, totalSlides, title }: SlideViewerProps) 
     [totalSlides]
   )
 
+  // Reset scroll position to top on every slide change.
+  useEffect(() => {
+    const el = scrollRefs.current[current]
+    if (el) el.scrollTop = 0
+  }, [current])
+
+  // Stable per-slide context factories.
+  const slideContextValues = useMemo(() => {
+    const makeRegister = (slideIndex: number) => (id: string, handle: RevealHandle) => {
+      let bucket = revealsRef.current.get(slideIndex)
+      if (!bucket) {
+        bucket = new Map()
+        revealsRef.current.set(slideIndex, bucket)
+      }
+      bucket.set(id, handle)
+    }
+    const makeUnregister = (slideIndex: number) => (id: string) => {
+      const bucket = revealsRef.current.get(slideIndex)
+      if (bucket) {
+        bucket.delete(id)
+        if (bucket.size === 0) revealsRef.current.delete(slideIndex)
+      }
+    }
+    const advanceReveal = (): boolean => {
+      const bucket = revealsRef.current.get(currentRef.current)
+      if (!bucket) return false
+      for (const handle of bucket.values()) {
+        if (handle.pending > 0) {
+          handle.advance()
+          return true
+        }
+      }
+      return false
+    }
+    const hasPendingReveal = (): boolean => {
+      const bucket = revealsRef.current.get(currentRef.current)
+      if (!bucket) return false
+      for (const handle of bucket.values()) {
+        if (handle.pending > 0) return true
+      }
+      return false
+    }
+    return { makeRegister, makeUnregister, advanceReveal, hasPendingReveal }
+  }, [])
+
   // Keyboard navigation
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -39,6 +95,28 @@ export function SlideViewer({ children, totalSlides, title }: SlideViewerProps) 
         goTo(current + 1)
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         goTo(current - 1)
+      } else if (e.key === ' ' || e.code === 'Space') {
+        // Don't hijack Space when the user is typing in a form control or
+        // pressing Space on a focusable element (e.g. a Flashcard button).
+        const target = e.target as HTMLElement | null
+        if (target) {
+          const tag = target.tagName
+          if (
+            tag === 'BUTTON' ||
+            tag === 'INPUT' ||
+            tag === 'TEXTAREA' ||
+            tag === 'SELECT' ||
+            target.isContentEditable
+          ) {
+            return
+          }
+        }
+        if (slideContextValues.advanceReveal()) {
+          e.preventDefault()
+        } else {
+          e.preventDefault()
+          goTo(current + 1)
+        }
       } else if (e.key === 'f') {
         setIsFullscreen((prev) => !prev)
       } else if (e.key === 'Escape') {
@@ -47,9 +125,23 @@ export function SlideViewer({ children, totalSlides, title }: SlideViewerProps) 
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [current, goTo])
+  }, [current, goTo, slideContextValues])
 
   const slideArray = React.Children.toArray(children)
+  const slideCount = slideArray.length
+
+  // Stable per-slide context values — only `isActive` flips on `current` change.
+  const perSlideContexts = useMemo(
+    () =>
+      Array.from({ length: slideCount }, (_, i) => ({
+        isActive: i === current,
+        registerReveal: slideContextValues.makeRegister(i),
+        unregisterReveal: slideContextValues.makeUnregister(i),
+        advanceReveal: slideContextValues.advanceReveal,
+        hasPendingReveal: slideContextValues.hasPendingReveal,
+      })),
+    [slideCount, current, slideContextValues]
+  )
 
   const outerClass = isFullscreen
     ? 'fixed inset-0 z-50 bg-gray-950 text-white flex flex-col'
@@ -71,23 +163,33 @@ export function SlideViewer({ children, totalSlides, title }: SlideViewerProps) 
 
       {/* Slide content */}
       <div className="flex-1 relative overflow-hidden">
-        {slideArray.map((slide, i) => (
-          <div
-            key={i}
-            className={`absolute inset-0 transition-opacity duration-200 ${
-              i === current
-                ? 'opacity-100 pointer-events-auto'
-                : 'opacity-0 pointer-events-none'
-            }`}
-            aria-hidden={i !== current}
-          >
-            <div className="w-full h-full flex items-center justify-center p-8 overflow-auto">
-              <div className="w-full max-w-4xl prose dark:prose-invert prose-lg">
-                {slide}
+        {slideArray.map((slide, i) => {
+          const isActive = i === current
+          return (
+            <div
+              key={i}
+              className={`absolute inset-0 transition-opacity duration-200 ${
+                isActive
+                  ? 'opacity-100 pointer-events-auto'
+                  : 'opacity-0 pointer-events-none'
+              }`}
+              aria-hidden={!isActive}
+            >
+              <div
+                ref={(el) => {
+                  scrollRefs.current[i] = el
+                }}
+                className="w-full h-full flex justify-center overflow-y-auto"
+              >
+                <div className="my-auto px-8 py-8 w-full max-w-4xl prose dark:prose-invert prose-lg">
+                  <SlideContext.Provider value={perSlideContexts[i]}>
+                    {slide}
+                  </SlideContext.Provider>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {/* Navigation bar */}

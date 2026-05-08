@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk ls *)",
+      "Bash(openspec new *)",
+      "Bash(openspec status *)",
+      "Bash(openspec instructions *)",
+      "Bash(rtk grep *)",
+      "Bash(openspec list *)",
+      "Bash(rtk read *)",
+      "Bash(rtk lint *)",
+      "Bash(rtk npx *)",
+      "Bash(rtk proxy *)",
+      "Bash(openspec --help)",
+      "Bash(openspec archive *)"
+    ]
+  }
+}

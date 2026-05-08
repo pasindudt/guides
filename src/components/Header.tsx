@@ -9,7 +9,7 @@ export function Header() {
           href="/"
           className="font-bold text-gray-900 dark:text-gray-100 hover:text-blue-500 transition-colors"
         >
-          Presenter
+          Guides
         </Link>
         <ThemeToggle />
       </div>
